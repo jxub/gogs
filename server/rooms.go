@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
+	"net"
 	"sync"
 
 	"github.com/google/uuid"
@@ -26,18 +28,54 @@ type Player struct {
 }
 
 type RoomState struct {
-	Rooms   map[uuid.UUID]Room
-	Players map[uuid.UUID]Player
-	Lock    *sync.Mutex
-	ErrChan chan error
+	Rooms    map[uuid.UUID]Room
+	Players  map[uuid.UUID]Player
+	Lock     *sync.Mutex
+	ErrChan  chan error
+	RecvChan chan []byte
+}
+
+func (p *Player) UDPAddr() *net.UDPAddr {
+	return &net.UDPAddr{IP: []byte(p.Addr), Port: p.UDPPort}
+}
+
+func (p *Player) TCPAddr() *net.TCPAddr {
+	return &net.TCPAddr{IP: []byte(p.Addr), Port: p.TCPPort}
 }
 
 func (p *Player) SendUDP(pidFrom *uuid.UUID, msg string) error {
-	return errors.New("not implemented")
+	conn, err := net.DialUDP("udp", nil, p.UDPAddr())
+	playerId := pidFrom.String()
+	msgMap := map[string]string{playerId: msg}
+	msgJson, err := json.Marshal(msgMap)
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write(msgJson)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (p *Player) SendTCP()  {
+func (p *Player) SendTCP(status string, data string, conn *net.TCPConn) error {
+	switch status {
+	case "ok", "fail":
+	default:
+		return errors.New("wrong status " + status)
+	}
+	msg := map[string]string{"status": status, "data": data}
+	msgJson, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write(msgJson)
+	if err != nil {
+		return err
+	}
 
+	return nil
 }
 
 func (r Room) IsEmpty() bool {
@@ -96,12 +134,13 @@ func (r *Room) Leave(player Player) (pid *uuid.UUID) {
 	return pid
 }
 
-func NewRoomState(errChan chan error) (*RoomState, error) {
+func NewRoomState(recvChan chan []byte, errChan chan error) (*RoomState, error) {
 	return &RoomState{
-		Rooms:   make(map[uuid.UUID]Room, 0),
-		Players: make(map[uuid.UUID]Player, 0),
-		Lock:    &sync.Mutex{},
-		ErrChan: errChan,
+		Rooms:    make(map[uuid.UUID]Room, 0),
+		Players:  make(map[uuid.UUID]Player, 0),
+		Lock:     &sync.Mutex{},
+		ErrChan:  errChan,
+		RecvChan: recvChan,
 	}, nil
 }
 

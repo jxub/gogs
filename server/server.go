@@ -3,12 +3,10 @@ package server
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/google/uuid"
-	"math/rand"
 	"net"
-	"strings"
-	"time"
 )
 
 type ActionMessage struct {
@@ -28,13 +26,39 @@ type PayloadJoin struct {
 	Rid *uuid.UUID
 }
 
+type PayloadAutojoin struct {
+	Pid *uuid.UUID
+}
+
+type PayloadLeave struct {
+	Pid *uuid.UUID
+	Rid *uuid.UUID
+}
+
+type PayloadGetRooms struct {
+	Pid *uuid.UUID
+}
+
+type PayloadSend struct {
+	Pid *uuid.UUID
+	Rid *uuid.UUID
+	Message []byte
+}
+
+type PayloadSendTo struct {
+	Pid *uuid.UUID
+	Rid *uuid.UUID
+	RecIds []byte
+	Message []byte
+}
+
 const (
-	ActionRegister   = "register"
-	ActionJoin       = "join"
-	ACTION_AUTOJOIN  = "autojoin"
-	ACTION_GET_ROOMS = "get_rooms"
-	ACTION_CREATE    = "create"
-	ACTION_LEAVE     = "leave"
+	ActionRegister = "register"
+	ActionJoin     = "join"
+	ActionAutojoin = "autojoin"
+	ActionGetRooms = "get_rooms"
+	ActionCreate   = "create"
+	ActionLeave    = "leave"
 )
 
 func execCommand(rs *RoomState, message *ActionMessage, conn net.Conn) error {
@@ -69,6 +93,27 @@ func execCommand(rs *RoomState, message *ActionMessage, conn net.Conn) error {
 		if err != nil {
 			return err
 		}
+	case ActionAutojoin:
+		var msg PayloadJoin
+		err := json.Unmarshal([]byte(message.Payload), &msg)
+		if err != nil {
+			return err
+		}
+		rid, err := rs.Join(msg.Pid, msg.Rid)
+		if err != nil {
+			return err
+		}
+		resp := fmt.Sprintf("joined room %s\n", rid)
+		_, err = conn.Write([]byte(resp))
+		if err != nil {
+			return err
+		}
+	case ActionGetRooms:
+		return errors.New("action not implemented: " + message.Action)
+	case ActionCreate:
+		return errors.New("action not implemented: " + message.Action)
+	case ActionLeave:
+		return errors.New("action not implemented: " + message.Action)
 	default:
 		resp := fmt.Sprintf("unrecognised action: %s\n", message.Action)
 		_, err := conn.Write([]byte(resp))
@@ -89,8 +134,9 @@ func handleTCPConn(rs *RoomState, conn net.Conn) <-chan error {
 			rs.ErrChan <- err
 			continue
 		}
-
-		err = json.Unmarshal([]byte(data), &message)
+		dataBytes := []byte(data)
+		rs.RecvChan <- dataBytes
+		err = json.Unmarshal(dataBytes, &message)
 		if err != nil {
 			fmt.Printf("error unmarshaling message %s\n", data)
 			rs.ErrChan <- err
@@ -104,11 +150,13 @@ func handleTCPConn(rs *RoomState, conn net.Conn) <-chan error {
 	}
 }
 
-func RunUDP(rs *RoomState, port string) <-chan error {
+func RunUDP(rs *RoomState, port string) (<-chan []byte, <-chan error) {
 	addr, err := net.ResolveUDPAddr("udp4", port)
 	if err != nil {
 		rs.ErrChan <- err
 	}
+
+	println("UDP addr ", addr.String())
 
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
@@ -116,21 +164,15 @@ func RunUDP(rs *RoomState, port string) <-chan error {
 	}
 
 	defer conn.Close()
-	buffer := make([]byte, 10)
-	rand.Seed(time.Now().Unix())
+	buffer := make([]byte, 1000)
 
 	for {
-		n, addr, err := conn.ReadFromUDP(buffer)
-		fmt.Print("-> ", string(buffer[0:n-1]))
-
-		if strings.TrimSpace(string(buffer[0:n])) == "STOP" {
-			fmt.Println("Exiting UDP server!")
-			rs.ErrChan <- err
-		}
-		data := []byte("aaa")
-		_, err = conn.WriteToUDP(data, addr)
+		n, _, err := conn.ReadFromUDP(buffer)
 		if err != nil {
 			rs.ErrChan <- err
+		} else {
+			msg := buffer[0 : n-1]
+			rs.RecvChan <- msg
 		}
 	}
 }
@@ -149,7 +191,6 @@ func RunTCP(rs *RoomState, port string) <-chan error {
 			rs.ErrChan <- err
 			continue
 		}
-
 		go handleTCPConn(rs, c)
 	}
 }
